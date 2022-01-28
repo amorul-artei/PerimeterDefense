@@ -5,6 +5,7 @@
 # Revision History:
 #      14.01.2022 voicua: Created "analyzeVideo.py" to test algorithms used in the analyzeVideo script.
 #      19.01.2022 voicua: Renamed to "videoAnalyzeRateOfChange.py" to better reflect what this phase of the algorithm is doing
+#      28.01.2022 voicua: Added parameter to enable highlighting the changes, to help with the tuning
 
 
 import imageio as iio
@@ -16,33 +17,94 @@ import numpy
 import os
 import sys
 from time import perf_counter
+import argparse
 
 kLuminanceDiffThreshold = 32
 kMotionDerivativeThreshold = 20.0 # percentage of change in modified pixel count
-kMinChange = 500
+kMinChange = 1500
+
+redMask = None
+
+def IsValueInInterval( point, thresholdAbsolute, valueToCheck ):
+    return valueToCheck > point - thresholdAbsolute and valueToCheck < point + thresholdAbsolute
+
+# threshold relative is given to this function as a fraction of the point
+def IsValueInRelativeInterval( point, thresholdRelative, valueToCheck ):
+    thresholdAbsolute = float( point ) * float( thresholdRelative )
+    return IsValueInInterval( point, thresholdAbsolute, valueToCheck )
+
 
 def PrepareFrameForAnalysis( frameRawData ):
     img = Image.fromarray( frameRawData, 'RGB' )
     img = img.convert( 'L' )
     return numpy.array( img, numpy.int16 )
 
-def MotionDerivativeDetected( base, new ):
-    if base < 0:
+
+def MotionDerivativeDetected( previousCoefficient, newCoefficient ):
+    if previousCoefficient < 0:
         return True
 
-    if abs( new - base ) < kMinChange:
+    if abs( newCoefficient - previousCoefficient ) < kMinChange:
         return False
 
-    threshold = float( base * kMotionDerivativeThreshold / 100.0 )
-    return (new < base - threshold) or (new > base + threshold)
+    threshold = float( previousCoefficient * kMotionDerivativeThreshold / 100.0 )
+    return (newCoefficient < previousCoefficient - threshold) or (newCoefficient > previousCoefficient + threshold)
 
-def CalculateDifferenceCoefficient( baseFrame, newFrame ):
-    diff = (newFrame - baseFrame)
+
+def AlphaMaskCalculation( diff ):
+    numpy.multiply( diff, 255, out = diff )
+    numpy.minimum( diff, 255, out = diff )
+
+    diff = numpy.reshape( diff, ( len( diff ), len( diff[ 0 ] ), 1 ) )
+    diff = numpy.tile( diff, 3 )
+
+    return diff
+
+
+def CalculateDifferenceCoefficient( baseComparison, newComparison, currentFrame = None, args = None ):
+    diff = (newComparison - baseComparison)
     numpy.divide( diff, kLuminanceDiffThreshold, out = diff, casting = 'unsafe' )
-    return numpy.count_nonzero( diff )
+
+    diffCoefficient = numpy.count_nonzero( diff )
+
+    if (not args is None) and args.highlightDiffs:
+
+        # Use Alpha-Blending technique with alpha fully opaque to highlight the changed area.
+        diff = AlphaMaskCalculation( diff )
+        oneMinusDiff = numpy.subtract( 255, diff )
+
+        #print( "Width = " + str( len( currentFrame ) ) + ", Height = " + str( len( currentFrame[ 0 ] ) ) )
+        #print( "Channels = " + str( len( currentFrame[ 0 ][ 0 ] ) ) )
+        #print( currentFrame.dtype )
+
+        global redMask
+        if redMask is None:
+            colorRed = numpy.array( [ 255, 0, 0 ] )
+            redMask = numpy.tile( colorRed, (len( currentFrame ), len( currentFrame[ 0 ] ), 1) )
+
+        # do the alpha blending
+        numpy.multiply( diff, redMask, out = diff )
+        numpy.divide( diff, 255, out = diff, casting = 'unsafe' )
+
+        if args.onlyDiffs:
+            numpy.multiply( currentFrame, 0, out = currentFrame )   # zero out the original image
+        else:
+            numpy.multiply( oneMinusDiff, currentFrame, out = oneMinusDiff )
+            numpy.divide( oneMinusDiff, 255, out = currentFrame, casting = 'unsafe' )
 
 
-def runRateOfChangeAnalysis( videoFileName ):
+        numpy.add( currentFrame, diff, out = currentFrame, casting = 'unsafe' )
+
+    return diffCoefficient
+
+
+class AlgorithmPerformanceResults:
+    def __init__( self ):
+        self.analysisAborted = False
+        self.totalFramesTriggered = 0
+        self.algorithmFPS = 0
+
+def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults = None ):
     kRocAnalyzedFileName = videoFileName + '_ROC_analyzed.mp4'
     if not os.path.isfile( videoFileName ):
         print( 'File not found: ' + videoFileName )
@@ -105,13 +167,18 @@ def runRateOfChangeAnalysis( videoFileName ):
 
         # Calculate differences
         currentComparison = PrepareFrameForAnalysis( currentFrame )
-        currentDiffCoefficient = CalculateDifferenceCoefficient( baseOfComparison, currentComparison )
+        currentDiffCoefficient = CalculateDifferenceCoefficient( \
+            baseOfComparison, currentComparison, currentFrame, args )
 
         if MotionDerivativeDetected( baseDiffCoefficient, currentDiffCoefficient ):
         
             #
             # We found a frame which triggered the motion detection heuristic
             #
+
+            # TODO-Pri1 voicua: use an iterator wrapper to hold onto the last 100 frames or so.
+            # this will allow to jump back in time when analysis realizes it found some serious motion
+            # especially after the accelerated (skipping) mode
 
             # TODO voicua: proper messaging
             # print( 'Number of changed pixel luminances: %i' % currentDiffCoefficient )
@@ -152,11 +219,11 @@ def runRateOfChangeAnalysis( videoFileName ):
 
 
         #
-        # Inspect time compression performance, and skip this file if it cannot be analyzed by this algorithm
+        # Inspect movie time compression performance, and skip this file if it cannot be analyzed by this algorithm
         #
 
+        timeCompressionRatio = float( totalNumFramesTriggered ) / float( currentFrameIndex )
         if currentFrameIndex > 2 * 60 * frameRate:
-            timeCompressionRatio = float( totalNumFramesTriggered ) / float( currentFrameIndex )
             if timeCompressionRatio > 0.95 or (timeCompressionRatio > 0.50 and timeCompressionRatio > prevTimeCompressionRatio): 
                 analysisAborted = True
                 break
@@ -164,7 +231,7 @@ def runRateOfChangeAnalysis( videoFileName ):
 
 
         #
-        # Update time performance statistics
+        # Update algorithm running time performance statistics
         #
 
         currentPercentageDone = float( currentFrameIndex ) / float( totalFrames)
@@ -184,7 +251,14 @@ def runRateOfChangeAnalysis( videoFileName ):
     if not writer is None:
         writer.close()
 
+    # Update returned performance data
+    if not algPerformanceResults is None:
+        algPerformanceResults.totalFramesTriggered = totalNumFramesTriggered
+        algPerformanceResults.algorithmFPS = framesProcessedPerSecond
+
     if analysisAborted:
+        if not algPerformanceResults is None:
+            algPerformanceResults.analysisAborted = True
         print( 'Rate of Change algorithm cannot analyze this video succesfully. Aborted.' )
         if os.path.isfile( kRocAnalyzedFileName ):
             os.remove( kRocAnalyzedFileName )
@@ -209,5 +283,15 @@ def runRateOfChangeAnalysis( videoFileName ):
 
 
 if __name__ == "__main__":
-    runRateOfChangeAnalysis( sys.argv[ 1 ] )
+    parser = argparse.ArgumentParser()
+    parser.add_argument( "videoFile", help="path to the video file to analyze" )
+    parser.add_argument( "--highlightDiffs", \
+        help="if enabled highlights the pixel difference in the output", action="store_true" )
+    parser.add_argument( "--onlyDiffs", \
+        help="if enabled only the differences are output", action="store_true" )
+
+    args = parser.parse_args()
+    if args.onlyDiffs:
+        args.highlightDiffs = True
+    runRateOfChangeAnalysis( args.videoFile, args )
 
