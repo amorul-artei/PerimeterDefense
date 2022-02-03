@@ -10,7 +10,7 @@ The idea is to have good tools that are able to correlate all aquired data (vide
 resolve once and for all the criminal abuse perpetrated with advanced, undisclosed technologies. This crime is in the same
 area as "Havana Syndrome".
 
-If the above text sounds perplexing to the reader of this document, please do not hesitate to contact me with further question.
+If the above text sounds perplexing to the reader of this document, please do not hesitate to contact me with further questions.
 r/IllusionOfFreedom (danger: NSFW content)
 @IllusionOfFreed (danger: some NSFW content)
 r/ZersetzungRomania (danger: extremely strong NSFW content)
