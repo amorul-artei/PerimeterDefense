@@ -22,8 +22,14 @@ import argparse
 kLuminanceDiffThreshold = 32
 kMotionDerivativeThreshold = 20.0 # percentage of change in modified pixel count
 kMinChange = 1500
+kTempFilePrefix = 'temp_ROC_'
 
 redMask = None
+
+#TODO-Pri2 voicua: consider moving helper functions in corresponding helper units
+def FlagEnabled( args, flagName ):
+    return (not args is None) and (flagName in args.__dict__) and args.__dict__[ flagName ]
+
 
 def IsValueInInterval( point, thresholdAbsolute, valueToCheck ):
     return valueToCheck > point - thresholdAbsolute and valueToCheck < point + thresholdAbsolute
@@ -67,7 +73,7 @@ def CalculateDifferenceCoefficient( baseComparison, newComparison, currentFrame 
 
     diffCoefficient = numpy.count_nonzero( diff )
 
-    if (not args is None) and args.highlightDiffs:
+    if FlagEnabled( args, "highlightDiffs" ):
 
         # Use Alpha-Blending technique with alpha fully opaque to highlight the changed area.
         diff = AlphaMaskCalculation( diff )
@@ -86,7 +92,7 @@ def CalculateDifferenceCoefficient( baseComparison, newComparison, currentFrame 
         numpy.multiply( diff, redMask, out = diff )
         numpy.divide( diff, 255, out = diff, casting = 'unsafe' )
 
-        if args.onlyDiffs:
+        if FlagEnabled( args, "onlyDiffs" ):
             numpy.multiply( currentFrame, 0, out = currentFrame )   # zero out the original image
         else:
             numpy.multiply( oneMinusDiff, currentFrame, out = oneMinusDiff )
@@ -98,21 +104,46 @@ def CalculateDifferenceCoefficient( baseComparison, newComparison, currentFrame 
     return diffCoefficient
 
 
+# Looks like I am ending up duplicating the C++ constructs in Python, minus proper encapsulation
+class RunningTimeAccumulator:
+    def __init__( self ):
+        self.accumulator = 0
+        self.counter = 0
+
+    def OnStartTimer( self ):
+        self.counter = perf_counter()
+
+    def OnStopTimer( self ):
+        stopTime = perf_counter()
+        self.accumulator += (stopTime - self.counter)
+
 class AlgorithmPerformanceResults:
     def __init__( self ):
         self.analysisAborted = False
         self.totalFramesTriggered = 0
         self.algorithmFPS = 0
+        self.ResetPerfCounters()
 
-def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults = None ):
-    kRocAnalyzedFileName = videoFileName + '_ROC_analyzed.mp4'
-    if not os.path.isfile( videoFileName ):
-        print( 'File not found: ' + videoFileName )
+    def ResetPerfCounters( self ):
+        self.diskReadingAccumulator = RunningTimeAccumulator()
+        self.framePrepAccumulator = RunningTimeAccumulator()
+        self.rocAnalysisAccumulator = RunningTimeAccumulator()
+
+
+def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults = None ):
+    if algPerformanceResults is None:
+        algPerformanceResults = AlgorithmPerformanceResults()
+
+    kRocTemporaryFileName = os.path.join( os.path.dirname( videoPathName ), kTempFilePrefix + os.path.basename( videoPathName ) )
+    kRocAnalyzedFileName = videoPathName + '_ROC_analyzed.mp4'
+    if not os.path.isfile( videoPathName ):
+        print( 'File not found: ' + videoPathName )
         return
 
     # get video properties such as number of frames, duration, etc
-    videoMeta = ffmpeg.probe( videoFileName )[ "streams" ]
+    videoMeta = ffmpeg.probe( videoPathName )[ "streams" ]
 
+    print( 'Resolution: %ix%i' % (videoMeta[ 0 ][ 'width' ], videoMeta[ 0 ][ 'height' ]) )
     print( 'Average Frame Rate: ' + videoMeta[ 0 ][ 'avg_frame_rate' ] )
     print( 'Duration in seconds: ' + videoMeta[ 0 ][ 'duration' ] )
 
@@ -122,7 +153,7 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
     totalFrames = int( frameRate * float( videoMeta[ 0 ][ 'duration' ] ) )
     print( 'Total frames: %i' % totalFrames )
 
-    reader = iio.get_reader( videoFileName )
+    reader = iio.get_reader( videoPathName )
     framesToSaveAsPng = []
     writer = None
 
@@ -130,7 +161,7 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
     # This is an optimization, to compensate for the really slow Python algorithms/image libraries.
     kNumLoopsUntriggeredThreshold = 100
     numLoopsUntriggered = 0 # currently, this means there are no changes in the rate of changes
-    kMaxFrameSkip = 24
+    kMaxFrameSkip = 30
     frameSkip = 0
     totalNumFramesTriggered = 0
 
@@ -140,10 +171,10 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
     analysisAborted = False
 
     currentFrameIndex = 0
-    lastUpdatePercentage = 0
-    iter = reader.iter_data()
+    
+    #iter = reader.iter_data()
 
-    baseFrame = next( iter )
+    baseFrame = reader.get_next_data()
     baseOfComparison = PrepareFrameForAnalysis( baseFrame )
     baseDiffCoefficient = -1
 
@@ -154,6 +185,22 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
     while not (baseOfComparison is None):
 
         # Read the next frame. Skip some frames if we are in skipping mode (i.e. uninteresting portion of the video)
+        # TODO-Pri0 voicua: totalFrames is calculated and may be inexact. Think of better strategies, or maybe
+        # catch the exception if the reader does run out of data. So far it seems to work correctly.
+        if currentFrameIndex + frameSkip >= totalFrames:
+            break   # end of the video. TODO voicua: consider to always process the last few frames (i.e. disable frameSkip if on)
+
+        algPerformanceResults.diskReadingAccumulator.OnStartTimer()
+
+        if frameSkip > 0:
+            reader.set_image_index( currentFrameIndex + frameSkip )
+            currentFrameIndex += frameSkip
+
+        currentFrame = reader.get_next_data()
+        currentFrameIndex += 1
+
+        '''
+        # The following strategy for skipping frames is slower, to avoid
         numFramesRead = 0
         while numFramesRead <= frameSkip:
             currentFrame = next( iter, None )
@@ -161,16 +208,27 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
                 break
             currentFrameIndex += 1
             numFramesRead += 1
+        '''
+        algPerformanceResults.diskReadingAccumulator.OnStopTimer()
 
         if currentFrame is None:
             break
 
+        #
         # Calculate differences
+        #
+
+        algPerformanceResults.framePrepAccumulator.OnStartTimer()
         currentComparison = PrepareFrameForAnalysis( currentFrame )
+        algPerformanceResults.framePrepAccumulator.OnStopTimer()
+
+        algPerformanceResults.rocAnalysisAccumulator.OnStartTimer()
         currentDiffCoefficient = CalculateDifferenceCoefficient( \
             baseOfComparison, currentComparison, currentFrame, args )
+        motionDerivativeWasDetected = MotionDerivativeDetected( baseDiffCoefficient, currentDiffCoefficient )
+        algPerformanceResults.rocAnalysisAccumulator.OnStopTimer()
 
-        if MotionDerivativeDetected( baseDiffCoefficient, currentDiffCoefficient ):
+        if motionDerivativeWasDetected:
         
             #
             # We found a frame which triggered the motion detection heuristic
@@ -195,7 +253,8 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
 
                 else:
                     # Get rid of the PNG list, and start a video.
-                    writer = iio.get_writer( kRocAnalyzedFileName, fps=10 )
+                    #TODO-Pri0 voicua: higher frame rate for results with lots of frames
+                    writer = iio.get_writer( kRocTemporaryFileName, fps=10 )
                     for (frameIndex, frame) in framesToSaveAsPng:
                         writer.append_data( baseFrame )
                         
@@ -238,27 +297,38 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
         currentTime = perf_counter()
         if currentTime - timerStart > 10 or framesProcessedPerSecond == 0:
             # recalculate statistics
-            framesProcessedPerSecond = int( (currentFrameIndex - frameIndexStarted) / (currentTime - timerStart) )
+            timeSpanReference = currentTime - timerStart
+            framesProcessedPerSecond = int( (currentFrameIndex - frameIndexStarted) / timeSpanReference )
+            if not args is None and args.verboseRunningTime:
+                diskPercentage = int( 100.0 * algPerformanceResults.diskReadingAccumulator.accumulator / timeSpanReference )
+                prepPercentage = int( 100.0 * algPerformanceResults.framePrepAccumulator.accumulator / timeSpanReference )
+                analysisPercentage = int( 100.0 * algPerformanceResults.rocAnalysisAccumulator.accumulator / timeSpanReference )
+                print()
+                print( "Algorithm FPS: %i (Disk reading: %i%%, Frame preparation: %i%%, Analysis: %i%%)" \
+                    % (framesProcessedPerSecond, diskPercentage, prepPercentage, analysisPercentage) )
             # reset counters
             timerStart = currentTime
             frameIndexStarted = currentFrameIndex
+            algPerformanceResults.ResetPerfCounters()
 
         if frameSkip == 0:        
-            print( "Frames completed: %i (%i%%, speed=%ifps), ratio = %.2f" % (currentFrameIndex, 100 * currentPercentageDone, framesProcessedPerSecond, timeCompressionRatio), end='\r' )
+            print( "Frames completed: %i (%i%%, speed=%ifps), ratio = %.2f            " \
+                % (currentFrameIndex, 100 * currentPercentageDone, framesProcessedPerSecond, timeCompressionRatio), end='\r' )
         else:
-            print( "Frames completed: %i (%i%%, speed=%ifps), frameSkip = %i" % (currentFrameIndex, 100 * currentPercentageDone, framesProcessedPerSecond, frameSkip), end='\r' )
+            print( "Frames completed: %i (%i%%, speed=%ifps), frameSkip = %i          " \
+                % (currentFrameIndex, 100 * currentPercentageDone, framesProcessedPerSecond, frameSkip), end='\r' )
 
     if not writer is None:
         writer.close()
+        # Rename file to final name
+        os.rename( kRocTemporaryFileName, kRocAnalyzedFileName )
 
     # Update returned performance data
-    if not algPerformanceResults is None:
-        algPerformanceResults.totalFramesTriggered = totalNumFramesTriggered
-        algPerformanceResults.algorithmFPS = framesProcessedPerSecond
+    algPerformanceResults.totalFramesTriggered = totalNumFramesTriggered
+    algPerformanceResults.algorithmFPS = framesProcessedPerSecond
 
     if analysisAborted:
-        if not algPerformanceResults is None:
-            algPerformanceResults.analysisAborted = True
+        algPerformanceResults.analysisAborted = True
         print( 'Rate of Change algorithm cannot analyze this video succesfully. Aborted.' )
         if os.path.isfile( kRocAnalyzedFileName ):
             os.remove( kRocAnalyzedFileName )
@@ -269,11 +339,7 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
     if not framesToSaveAsPng is None:
         # Write png to disk. TODO: command line parameter
         for (frameIndex, frame) in framesToSaveAsPng:
-            iio.imwrite( videoFileName + '_ROC_analyzed_frame_' + str( frameIndex ) + '.png', frame )
-
-    #if totalNumFramesTriggered < 10:
-        #print( "Removing file " + videoFileName + " due to few triggered frames found. Triggered frames were saved." )
-        #os.remove( videoFileName )
+            iio.imwrite( videoPathName + '_ROC_analyzed_frame_' + str( frameIndex ) + '.png', frame )
 
 
     print( '' )
@@ -285,6 +351,8 @@ def runRateOfChangeAnalysis( videoFileName, args = None, algPerformanceResults =
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument( "videoFile", help="path to the video file to analyze" )
+    parser.add_argument( "--verboseRunningTime", \
+        help="enables display of running time performance split per phases of the algorithm", action="store_true" )
     parser.add_argument( "--highlightDiffs", \
         help="if enabled highlights the pixel difference in the output", action="store_true" )
     parser.add_argument( "--onlyDiffs", \
@@ -295,3 +363,4 @@ if __name__ == "__main__":
         args.highlightDiffs = True
     runRateOfChangeAnalysis( args.videoFile, args )
 
+#TODO-Pri1 voicua: mark on the frame when there was a fast forward
