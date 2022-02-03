@@ -59,11 +59,9 @@ def CheckResults( fileName, expected, obtained, stats ):
     return True
 
 
-# V2K: "se abereaza"
-def PrintTitle( leasfiavutDejaAberate ):
+def PrintTitle( title ):
     print()
-    print( leasfiavutDejaAberate )  # Eu: "partea proasta este ca m-am aberat deja in proiectele mele anterioare,
-        # dar o fecala infecta s-a bagat peste viata mea
+    print( title )
 
 class TestStatistics:
     def __init__( self ):
@@ -87,20 +85,26 @@ Test_CalculateDifferenceCoefficient( stats )
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
 expectedResults.totalFramesTriggered = 1
-expectedResults.algorithmFPS = 14
+expectedResults.algorithmFPS = 33
 RunTestForVideoFile( unitTest0, stats )
 
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
 expectedResults.totalFramesTriggered = 1
-expectedResults.algorithmFPS = 28
+expectedResults.algorithmFPS = 47
 RunTestForVideoFile( unitTest1, stats )
 
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
 expectedResults.totalFramesTriggered = 24
-expectedResults.algorithmFPS = 30
+expectedResults.algorithmFPS = 42
 RunTestForVideoFile( unitTest2, stats )
 
+print()
 if stats.numErrors == 0:
     print( "Unit test succeeded without errors!" )
+else:
+    print( "Unit test found %i errors!" % stats.numErrors )
+
+print()
+print()
