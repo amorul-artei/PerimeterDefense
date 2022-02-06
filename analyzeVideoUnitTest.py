@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # Author: Voicu Anton Albu
@@ -8,6 +9,7 @@
 import numpy
 
 import videoAnalyzeRateOfChange
+import videoAnalysisHelpers
 
 
 unitTestDataPath = "../UnitTestData/"
@@ -36,16 +38,20 @@ def Test_CalculateDifferenceCoefficient( stats ):
     
 
 def PrintPerf( results ):
-    print( "Analysis aborted: " + str( results.analysisAborted ) )
-    print( "Number of triggered frames: " + str( results.totalFramesTriggered ) )
-    print( "Algorithm FPS: " + str( results.algorithmFPS ) )
+    spaceSuffix = "    "
+    print( spaceSuffix + "Analysis aborted: " + str( results.analysisAborted ) )
+    print( spaceSuffix + "Number of frames expected in the file: " + str( results.totalFramesInVideoFile ) )
+    print( spaceSuffix + "Number of processed frames: " + str( results.totalFramesProcessed ) )
+    print( spaceSuffix + "Number of skipped frames: " + str( results.totalFramesSkipped ) )
+    print( spaceSuffix + "Number of triggered frames: " + str( results.totalFramesTriggered ) )
+    print( spaceSuffix + "Algorithm FPS: " + str( results.algorithmFPS ) )
 
 def CheckResults( fileName, expected, obtained, stats ):
-    # TODO voicua: FPS might not be exact enough, and dependent on the machine, etc.
-    # perhaps check the statistics related to acceleration such as number of frames skipped
     if expected.analysisAborted != obtained.analysisAborted or \
-        expected.totalFramesTriggered != obtained.totalFramesTriggered or \
-        not videoAnalyzeRateOfChange.IsValueInRelativeInterval( expected.algorithmFPS, 0.35, obtained.algorithmFPS ):
+        expected.totalFramesInVideoFile != obtained.totalFramesInVideoFile or \
+        expected.totalFramesProcessed != obtained.totalFramesProcessed or \
+        expected.totalFramesSkipped != obtained.totalFramesSkipped or \
+        expected.totalFramesTriggered != obtained.totalFramesTriggered:
             print( "Algorithm performance changed for file: ", fileName )
             print( "Expected results:" )
             PrintPerf( expected )
@@ -69,8 +75,9 @@ class TestStatistics:
 
 def RunTestForVideoFile( fileName, stats ):
     PrintTitle( "Running test for file " + fileName )
+    logger = videoAnalysisHelpers.Logger()
     algPerformanceResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
-    videoAnalyzeRateOfChange.runRateOfChangeAnalysis( fileName, None, algPerformanceResults )
+    videoAnalyzeRateOfChange.runRateOfChangeAnalysis( fileName, logger, None, algPerformanceResults )
     CheckResults( fileName, expectedResults, algPerformanceResults, stats )
 
 
@@ -84,18 +91,27 @@ Test_CalculateDifferenceCoefficient( stats )
 
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
+expectedResults.totalFramesInVideoFile = 240
+expectedResults.totalFramesProcessed = 117
+expectedResults.totalFramesSkipped = 120
 expectedResults.totalFramesTriggered = 1
 expectedResults.algorithmFPS = 33
 RunTestForVideoFile( unitTest0, stats )
 
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
+expectedResults.totalFramesInVideoFile = 480
+expectedResults.totalFramesProcessed = 144
+expectedResults.totalFramesSkipped = 336
 expectedResults.totalFramesTriggered = 1
 expectedResults.algorithmFPS = 47
 RunTestForVideoFile( unitTest1, stats )
 
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
+expectedResults.totalFramesInVideoFile = 939
+expectedResults.totalFramesProcessed = 426
+expectedResults.totalFramesSkipped = 512
 expectedResults.totalFramesTriggered = 24
 expectedResults.algorithmFPS = 42
 RunTestForVideoFile( unitTest2, stats )
