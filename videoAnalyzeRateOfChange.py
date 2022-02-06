@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # Author: Voicu Anton Albu
@@ -11,7 +12,6 @@
 import imageio as iio
 import ffmpeg
 from PIL import Image
-from numpy import asarray
 import numpy
 
 import os
@@ -120,6 +120,11 @@ class RunningTimeAccumulator:
 class AlgorithmPerformanceResults:
     def __init__( self ):
         self.analysisAborted = False
+        self.totalFramesInVideoFile = 0
+            # Note: totalFramesInVideoFile approx totalFramesSkipped + totalFramesProcessed, unless there is a problem accessing all video frames
+            # totalFramesInVideoFile is not calculated exactly, it's an approximation based on video duration.
+        self.totalFramesProcessed = 0
+        self.totalFramesSkipped = 0
         self.totalFramesTriggered = 0
         self.algorithmFPS = 0
         self.ResetPerfCounters()
@@ -130,7 +135,8 @@ class AlgorithmPerformanceResults:
         self.rocAnalysisAccumulator = RunningTimeAccumulator()
 
 
-def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults = None ):
+
+def runRateOfChangeAnalysis( videoPathName, logger, args = None, algPerformanceResults = None ):
     if algPerformanceResults is None:
         algPerformanceResults = AlgorithmPerformanceResults()
 
@@ -143,15 +149,16 @@ def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults =
     # get video properties such as number of frames, duration, etc
     videoMeta = ffmpeg.probe( videoPathName )[ "streams" ]
 
-    print( 'Resolution: %ix%i' % (videoMeta[ 0 ][ 'width' ], videoMeta[ 0 ][ 'height' ]) )
-    print( 'Average Frame Rate: ' + videoMeta[ 0 ][ 'avg_frame_rate' ] )
-    print( 'Duration in seconds: ' + videoMeta[ 0 ][ 'duration' ] )
+    logger.PrintMessage( 'Resolution: %ix%i' % (videoMeta[ 0 ][ 'width' ], videoMeta[ 0 ][ 'height' ]) )
+    logger.PrintMessage( 'Average Frame Rate: ' + videoMeta[ 0 ][ 'avg_frame_rate' ] )
+    logger.PrintMessage( 'Duration in seconds: ' + videoMeta[ 0 ][ 'duration' ] )
 
     frameRatePair = videoMeta[ 0 ][ 'avg_frame_rate' ].split( '/' )
     frameRate = float( frameRatePair[ 0 ] ) / float( frameRatePair[ 1 ] )
 
     totalFrames = int( frameRate * float( videoMeta[ 0 ][ 'duration' ] ) )
-    print( 'Total frames: %i' % totalFrames )
+    logger.PrintMessage( 'Total frames: %i' % totalFrames )
+    algPerformanceResults.totalFramesInVideoFile = totalFrames
 
     reader = iio.get_reader( videoPathName )
     framesToSaveAsPng = []
@@ -185,30 +192,37 @@ def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults =
     while not (baseOfComparison is None):
 
         # Read the next frame. Skip some frames if we are in skipping mode (i.e. uninteresting portion of the video)
-        # TODO-Pri0 voicua: totalFrames is calculated and may be inexact. Think of better strategies, or maybe
-        # catch the exception if the reader does run out of data. So far it seems to work correctly.
         if currentFrameIndex + frameSkip >= totalFrames:
             break   # end of the video. TODO voicua: consider to always process the last few frames (i.e. disable frameSkip if on)
 
         algPerformanceResults.diskReadingAccumulator.OnStartTimer()
 
-        if frameSkip > 0:
-            reader.set_image_index( currentFrameIndex + frameSkip )
-            currentFrameIndex += frameSkip
+        currentFrame = None
 
-        currentFrame = reader.get_next_data()
-        currentFrameIndex += 1
+        try:
+            if frameSkip > 0:
+                reader.set_image_index( currentFrameIndex + frameSkip )
+                currentFrameIndex += frameSkip
+                algPerformanceResults.totalFramesSkipped += frameSkip
 
-        '''
-        # The following strategy for skipping frames is slower, to avoid
-        numFramesRead = 0
-        while numFramesRead <= frameSkip:
-            currentFrame = next( iter, None )
-            if currentFrame is None:
-                break
+            currentFrame = reader.get_next_data()
             currentFrameIndex += 1
-            numFramesRead += 1
-        '''
+
+            '''
+            # The following strategy for skipping frames is slower, to avoid
+            numFramesRead = 0
+            while numFramesRead <= frameSkip:
+                currentFrame = next( iter, None )
+                if currentFrame is None:
+                    break
+                currentFrameIndex += 1
+                numFramesRead += 1
+            '''
+        except:
+            logger.PrintMessage( "Exception thrown by video decoder attempting to read frame index %i" % currentFrameIndex )
+            # TODO-Pri1 voicua: what if the file support media was unplugged?
+            logger.PrintMessage( "Assuming end of file. Ending analysis." )
+
         algPerformanceResults.diskReadingAccumulator.OnStopTimer()
 
         if currentFrame is None:
@@ -239,7 +253,7 @@ def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults =
             # especially after the accelerated (skipping) mode
 
             # TODO voicua: proper messaging
-            # print( 'Number of changed pixel luminances: %i' % currentDiffCoefficient )
+            # logger.PrintMessage( 'Number of changed pixel luminances: %i' % currentDiffCoefficient )
 
             baseDiffCoefficient = currentDiffCoefficient
             baseFrame = currentFrame
@@ -277,6 +291,9 @@ def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults =
                 frameSkip += 8
 
 
+        # Done processing of this frame
+        algPerformanceResults.totalFramesProcessed += 1
+
         #
         # Inspect movie time compression performance, and skip this file if it cannot be analyzed by this algorithm
         #
@@ -303,8 +320,8 @@ def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults =
                 diskPercentage = int( 100.0 * algPerformanceResults.diskReadingAccumulator.accumulator / timeSpanReference )
                 prepPercentage = int( 100.0 * algPerformanceResults.framePrepAccumulator.accumulator / timeSpanReference )
                 analysisPercentage = int( 100.0 * algPerformanceResults.rocAnalysisAccumulator.accumulator / timeSpanReference )
-                print()
-                print( "Algorithm FPS: %i (Disk reading: %i%%, Frame preparation: %i%%, Analysis: %i%%)" \
+                logger.PrintMessage()
+                logger.PrintMessage( "Algorithm FPS: %i (Disk reading: %i%%, Frame preparation: %i%%, Analysis: %i%%)" \
                     % (framesProcessedPerSecond, diskPercentage, prepPercentage, analysisPercentage) )
             # reset counters
             timerStart = currentTime
@@ -329,7 +346,7 @@ def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults =
 
     if analysisAborted:
         algPerformanceResults.analysisAborted = True
-        print( 'Rate of Change algorithm cannot analyze this video succesfully. Aborted.' )
+        logger.PrintMessage( 'Rate of Change algorithm cannot analyze this video succesfully. Aborted.' )
         if os.path.isfile( kRocAnalyzedFileName ):
             os.remove( kRocAnalyzedFileName )
         return
@@ -342,9 +359,9 @@ def runRateOfChangeAnalysis( videoPathName, args = None, algPerformanceResults =
             iio.imwrite( videoPathName + '_ROC_analyzed_frame_' + str( frameIndex ) + '.png', frame )
 
 
-    print( '' )
-    print( 'All Done. Number of frames processed: %i' % currentFrameIndex )
-    print( 'Total number of frames found interesting: %i' % totalNumFramesTriggered )
+    logger.PrintMessage( '' )
+    logger.PrintMessage( 'All Done. Number of frames processed: %i' % algPerformanceResults.totalFramesProcessed )
+    logger.PrintMessage( 'Total number of frames found interesting: %i' % totalNumFramesTriggered )
 
 
 
@@ -364,3 +381,7 @@ if __name__ == "__main__":
     runRateOfChangeAnalysis( args.videoFile, args )
 
 #TODO-Pri1 voicua: mark on the frame when there was a fast forward
+#TODO-Pri0 voicua: movement analysis (i.e. find objects with contiguous move, linear, accelerated, etc) 
+#   similar to the NASA programming contest some years ago
+# TODO-Pri0: noise detection + removal
+# TODO-Pri1: assign AI/heuristics calculated interestingness scores to analysis, to prioritize review/notifications, etc
