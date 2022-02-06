@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # Author: Voicu Anton Albu
@@ -5,13 +6,14 @@
 # Revision History:
 #      19.01.2022 voicua: Created "processVideos.py" to run analysis on a directory
 
-import videoAnalyzeRateOfChange
-
-import ffmpeg
-
 import os
 import time
 import argparse
+
+import ffmpeg
+
+import videoAnalyzeRateOfChange
+from videoAnalysisHelpers import Logger
 
 
 def GetFormattedFileSize( size ):
@@ -41,7 +43,8 @@ def AnalyzeTimeline( videosList ):
 
 def CleanupPreviousRun():
     filesToRemove = [ f for f in os.listdir() if os.path.isfile( f ) and \
-        f.lower().startswith( videoAnalyzeRateOfChange.kTempFilePrefix ) ]
+        f.lower().startswith( videoAnalyzeRateOfChange.kTempFilePrefix.lower() ) ]
+    print( "Removing %i temporary files from previous run..." % len( filesToRemove ) )
     for f in filesToRemove:
         os.remove( f )
 
@@ -50,33 +53,63 @@ def DoGoProSpecificCleanup():
     # Remove all *lrv and *thm files
     filesToRemove = [ f for f in os.listdir() if os.path.isfile( f ) and \
         ( f.lower().endswith( ".lrv" ) or f.lower().endswith( ".thm" ) ) ]
+    print( "Removing %i GoPro low resolution videos..." % len( filesToRemove ) )
     for f in filesToRemove:
         os.remove( f )
 
     # Rename all *.360 to *.360.mp4
     filesToRename = [ f for f in os.listdir() if os.path.isfile( f ) and f.lower().endswith( ".360" ) ]
+    print( "Renaming %i 360 GoPro videos so that imageio accepts them..." % len( filesToRename ) )
     for f in filesToRename:
         os.rename( f, f + ".mp4" )
 
 
+
+
 def runProcessVideos( args = None ):
+
+    #
+    # Prepare the folder for a new analysis, by doing some initial maintenance
+    #
     CleanupPreviousRun()
     DoGoProSpecificCleanup()
 
+    #
+    # Calculate the list of videos that must be processed. Remove from the list any videos already analyzed.
+    # This in turn enables the user to restart the process on a previously interrupted run.
+    #
+
     onlyVideos = [ f for f in os.listdir() if os.path.isfile( f ) and f.lower().endswith( ".mp4" ) ]
 
-    alreadyAnalyzedVideos = [ f for f in onlyVideos if "_ROC_analyzed" in f ]
-    tobeAnalyzedVideos = list( set( onlyVideos ) - set( alreadyAnalyzedVideos ) )
+    rocPreviousResults = [ f for f in onlyVideos if "_ROC_analyzed" in f ]
+    allTextFiles = [ f for f in os.listdir() if os.path.isfile( f ) and f.lower().endswith( ".txt" ) ]
 
-    origNames = []
-    if len( alreadyAnalyzedVideos ) > 0:
-        print( "Found previous analysis, skipping" )
-        for f in alreadyAnalyzedVideos:
-            origName = f[ :f.find( "_ROC_analyzed" ) ]
-            print( origName )
-            origNames.append( origName )
+    # initialize the list with all the originals found in the folder
+    tobeAnalyzedVideos = list( set( onlyVideos ) - set( rocPreviousResults ) )
 
-    tobeAnalyzedVideos = list( set( tobeAnalyzedVideos ) - set( origNames ) )
+    alreadyAnalyzedOriginals = []
+    for f in rocPreviousResults:
+        origName = f[ :f.find( "_ROC_analyzed" ) ]
+        print( origName )
+        alreadyAnalyzedOriginals.append( origName )
+
+    for f in allTextFiles:
+        origName = os.path.splitext( os.path.basename( f ) )[ 0 ]
+        if origName in tobeAnalyzedVideos:
+            alreadyAnalyzedOriginals.append( origName )
+
+    if len( alreadyAnalyzedOriginals ) > 0:
+        print( "Found previous analysis, skipping the following originals:" )
+        for f in alreadyAnalyzedOriginals:
+            print( f )
+
+
+    tobeAnalyzedVideos = list( set( tobeAnalyzedVideos ) - set( alreadyAnalyzedOriginals ) )
+
+    #
+    # Add aditional file information to the final list, and sort it
+    #
+
     tobeAnalyzedVideos = [ (f, os.path.getmtime( f ), os.path.getsize( f ) ) for f in tobeAnalyzedVideos ]
     tobeAnalyzedVideos.sort( key = lambda x: x[ 1 ] )
 
@@ -87,14 +120,22 @@ def runProcessVideos( args = None ):
 
     #AnalyzeTimeline( tobeAnalyzedVideos )
 
+    #
+    # Run analysis
+    #
+
     count = 1
     for a in tobeAnalyzedVideos:
         print( "" )
         print( "" )
         print( "------------------------------------------------------" )
         print( "-----------------------%i/%i--------------------------" % (count, len( tobeAnalyzedVideos )) )
+
+        logger = Logger( a[ 0 ] + ".txt" )
         print( "Running analysis for " + GetFormattedFileStats( a ) )
-        videoAnalyzeRateOfChange.runRateOfChangeAnalysis( a[ 0 ], args )
+        videoAnalyzeRateOfChange.runRateOfChangeAnalysis( a[ 0 ], logger, args )
+        logger.Close()
+
         print( "" )
         count += 1
 
@@ -113,3 +154,4 @@ if __name__ == "__main__":
 
 
 #TODO-Pri1 voicua: ability to carbon copy all output to a log file as well
+#TODO-Pri0 voicua: unittesting for this file
