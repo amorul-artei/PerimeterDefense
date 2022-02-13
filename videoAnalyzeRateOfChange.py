@@ -19,6 +19,8 @@ import sys
 from time import perf_counter
 import argparse
 
+import videoAnalysisHelpers
+
 kLuminanceDiffThreshold = 32
 kMotionDerivativeThreshold = 20.0 # percentage of change in modified pixel count
 kMinChange = 1500
@@ -136,19 +138,23 @@ class AlgorithmPerformanceResults:
 
 
 
-def runRateOfChangeAnalysis( videoPathName, logger, args = None, algPerformanceResults = None ):
+def runRateOfChangeAnalysis( videoPathName, logger, args, algPerformanceResults = None ):
     if algPerformanceResults is None:
         algPerformanceResults = AlgorithmPerformanceResults()
 
-    kRocTemporaryFileName = os.path.join( os.path.dirname( videoPathName ), kTempFilePrefix + os.path.basename( videoPathName ) )
-    kRocAnalyzedFileName = videoPathName + '_ROC_analyzed.mp4'
+    # Figure out disk locations first
     if not os.path.isfile( videoPathName ):
         print( 'File not found: ' + videoPathName )
         return
 
+    originalVideoFileName = os.path.basename( videoPathName )
+    kRocTemporaryFilePath = os.path.join( args.destFolder, kTempFilePrefix + originalVideoFileName )
+    kRocAnalyzedFilePath = os.path.join( args.destFolder, originalVideoFileName + '_ROC_analyzed.mp4' )
+
     # get video properties such as number of frames, duration, etc
     videoMeta = ffmpeg.probe( videoPathName )[ "streams" ]
 
+    logger.PrintMessage( "Frame rate-of-change analysis starting" )
     logger.PrintMessage( 'Resolution: %ix%i' % (videoMeta[ 0 ][ 'width' ], videoMeta[ 0 ][ 'height' ]) )
     logger.PrintMessage( 'Average Frame Rate: ' + videoMeta[ 0 ][ 'avg_frame_rate' ] )
     logger.PrintMessage( 'Duration in seconds: ' + videoMeta[ 0 ][ 'duration' ] )
@@ -268,7 +274,7 @@ def runRateOfChangeAnalysis( videoPathName, logger, args = None, algPerformanceR
                 else:
                     # Get rid of the PNG list, and start a video.
                     #TODO-Pri0 voicua: higher frame rate for results with lots of frames
-                    writer = iio.get_writer( kRocTemporaryFileName, fps=10 )
+                    writer = iio.get_writer( kRocTemporaryFilePath, fps=10 )
                     for (frameIndex, frame) in framesToSaveAsPng:
                         writer.append_data( baseFrame )
                         
@@ -338,7 +344,7 @@ def runRateOfChangeAnalysis( videoPathName, logger, args = None, algPerformanceR
     if not writer is None:
         writer.close()
         # Rename file to final name
-        os.rename( kRocTemporaryFileName, kRocAnalyzedFileName )
+        os.rename( kRocTemporaryFilePath, kRocAnalyzedFilePath )
 
     # Update returned performance data
     algPerformanceResults.totalFramesTriggered = totalNumFramesTriggered
@@ -347,8 +353,8 @@ def runRateOfChangeAnalysis( videoPathName, logger, args = None, algPerformanceR
     if analysisAborted:
         algPerformanceResults.analysisAborted = True
         logger.PrintMessage( 'Rate of Change algorithm cannot analyze this video succesfully. Aborted.' )
-        if os.path.isfile( kRocAnalyzedFileName ):
-            os.remove( kRocAnalyzedFileName )
+        if os.path.isfile( kRocAnalyzedFilePath ):
+            os.remove( kRocAnalyzedFilePath )
         return
 
 
@@ -356,32 +362,38 @@ def runRateOfChangeAnalysis( videoPathName, logger, args = None, algPerformanceR
     if not framesToSaveAsPng is None:
         # Write png to disk. TODO: command line parameter
         for (frameIndex, frame) in framesToSaveAsPng:
-            iio.imwrite( videoPathName + '_ROC_analyzed_frame_' + str( frameIndex ) + '.png', frame )
+            iio.imwrite( os.path.join( args.destFolder, \
+                originalVideoFileName + '_ROC_analyzed_frame_' + str( frameIndex ) + '.png' ), frame )
 
 
     logger.PrintMessage( '' )
     logger.PrintMessage( 'All Done. Number of frames processed: %i' % algPerformanceResults.totalFramesProcessed )
     logger.PrintMessage( 'Total number of frames found interesting: %i' % totalNumFramesTriggered )
+    logger.PrintMessage( "Frame rate-of-change analysis done." )
 
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument( "videoFile", help="path to the video file to analyze" )
-    parser.add_argument( "--verboseRunningTime", \
-        help="enables display of running time performance split per phases of the algorithm", action="store_true" )
-    parser.add_argument( "--highlightDiffs", \
-        help="if enabled highlights the pixel difference in the output", action="store_true" )
-    parser.add_argument( "--onlyDiffs", \
-        help="if enabled only the differences are output", action="store_true" )
+    parser.add_argument( "videoFile", help = "path to the video file to analyze" )
+    parser.add_argument( "--destFolder", type = str, default = ".",
+        help = "optional destination folder for results of analysis. Default: current working directory" )
+    parser.add_argument( "--verboseRunningTime", action = "store_true",
+        help="enables display of running time performance split per phases of the algorithm" )
+    parser.add_argument( "--highlightDiffs", action="store_true",
+        help="if enabled highlights the pixel difference in the output" )
+    parser.add_argument( "--onlyDiffs", action="store_true",
+        help="if enabled only the differences are output" )
 
     args = parser.parse_args()
     if args.onlyDiffs:
         args.highlightDiffs = True
-    runRateOfChangeAnalysis( args.videoFile, args )
+        
+    runRateOfChangeAnalysis( args.videoFile, videoAnalysisHelpers.Logger(), args )
 
 #TODO-Pri1 voicua: mark on the frame when there was a fast forward
 #TODO-Pri0 voicua: movement analysis (i.e. find objects with contiguous move, linear, accelerated, etc) 
 #   similar to the NASA programming contest some years ago
-# TODO-Pri0: noise detection + removal
-# TODO-Pri1: assign AI/heuristics calculated interestingness scores to analysis, to prioritize review/notifications, etc
+# TODO-Pri0 voicua: noise detection + removal
+# TODO-Pri1 voicua: assign AI/heuristics calculated interestingness scores to analysis, to prioritize review/notifications, etc
+# TODO-Pri1 voicua: refine the roc algorithm by looking at the grid location, similar to the tile PSNR strategies
