@@ -6,6 +6,8 @@
 # Revision History:
 #      16.01.2022 voicua: Created "analyzeVideoUnitTest.py" to test algorithms used in the analyzeVideo script.
 
+import argparse
+
 import numpy
 
 import videoAnalyzeRateOfChange
@@ -73,11 +75,11 @@ class TestStatistics:
     def __init__( self ):
         self.numErrors = 0
 
-def RunTestForVideoFile( fileName, stats ):
+def RunTestForVideoFile( fileName, args, stats ):
     PrintTitle( "Running test for file " + fileName )
     logger = videoAnalysisHelpers.Logger()
     algPerformanceResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
-    videoAnalyzeRateOfChange.runRateOfChangeAnalysis( fileName, logger, None, algPerformanceResults )
+    videoAnalyzeRateOfChange.runRateOfChangeAnalysis( fileName, logger, args, algPerformanceResults )
     CheckResults( fileName, expectedResults, algPerformanceResults, stats )
 
 
@@ -89,6 +91,18 @@ print()
 stats = TestStatistics()
 Test_CalculateDifferenceCoefficient( stats )
 
+parser = argparse.ArgumentParser()
+parser.add_argument( "--destFolder", type = str, default = ".",
+    help = "optional destination folder for results of analysis. Default: current working directory" )
+parser.add_argument( "--verboseRunningTime", action="store_true",
+    help="enables display of running time performance split per phases of the algorithm" )
+parser.add_argument( "--highlightDiffs", action="store_true",
+    help="if enabled highlights the pixel difference in the output" )
+parser.add_argument( "--onlyDiffs", action="store_true",
+    help="if enabled only the differences are output" )
+
+args = parser.parse_args( "" )
+
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
 expectedResults.totalFramesInVideoFile = 240
@@ -96,7 +110,7 @@ expectedResults.totalFramesProcessed = 117
 expectedResults.totalFramesSkipped = 120
 expectedResults.totalFramesTriggered = 1
 expectedResults.algorithmFPS = 33
-RunTestForVideoFile( unitTest0, stats )
+RunTestForVideoFile( unitTest0, args, stats )
 
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
@@ -105,7 +119,7 @@ expectedResults.totalFramesProcessed = 144
 expectedResults.totalFramesSkipped = 336
 expectedResults.totalFramesTriggered = 1
 expectedResults.algorithmFPS = 47
-RunTestForVideoFile( unitTest1, stats )
+RunTestForVideoFile( unitTest1, args, stats )
 
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
@@ -114,7 +128,7 @@ expectedResults.totalFramesProcessed = 426
 expectedResults.totalFramesSkipped = 512
 expectedResults.totalFramesTriggered = 24
 expectedResults.algorithmFPS = 42
-RunTestForVideoFile( unitTest2, stats )
+RunTestForVideoFile( unitTest2, args, stats )
 
 print()
 if stats.numErrors == 0:
