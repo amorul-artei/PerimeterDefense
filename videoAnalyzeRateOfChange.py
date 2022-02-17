@@ -43,6 +43,8 @@ def IsValueInRelativeInterval( point, thresholdRelative, valueToCheck ):
 
 
 def PrepareFrameForAnalysis( frameRawData ):
+    #TODO-Pri0 voicua: use aggregate (see python's "Panda") instead of Image to calculate Luminance
+    #   currently PrepareFrameForAnalysis is the most expensive operation 
     img = Image.fromarray( frameRawData, 'RGB' )
     img = img.convert( 'L' )
     return numpy.array( img, numpy.int16 )
@@ -267,14 +269,13 @@ def runRateOfChangeAnalysis( videoPathName, logger, args, algPerformanceResults 
 
             # Save the pixels for subsequent analysis
             if writer is None:
-                if len( framesToSaveAsPng ) < 10:
+                if len( framesToSaveAsPng ) < 30:
                     # Save to PNG list
                     framesToSaveAsPng.append( (currentFrameIndex, baseFrame) )
 
                 else:
                     # Get rid of the PNG list, and start a video.
-                    #TODO-Pri0 voicua: higher frame rate for results with lots of frames
-                    writer = iio.get_writer( kRocTemporaryFilePath, fps=10 )
+                    writer = iio.get_writer( kRocTemporaryFilePath, fps = 30 )
                     for (frameIndex, frame) in framesToSaveAsPng:
                         writer.append_data( baseFrame )
                         
@@ -358,12 +359,18 @@ def runRateOfChangeAnalysis( videoPathName, logger, args, algPerformanceResults 
         return
 
 
-    # TODO voicua: instead of saving 10 files, would it be better if it's possible to create a video with very low frame rate 5fps?
     if not framesToSaveAsPng is None:
-        # Write png to disk. TODO: command line parameter
-        for (frameIndex, frame) in framesToSaveAsPng:
-            iio.imwrite( os.path.join( args.destFolder, \
-                originalVideoFileName + '_ROC_analyzed_frame_' + str( frameIndex ) + '.png' ), frame )
+        if len( framesToSaveAsPng ) >= 10:
+            writer = iio.get_writer( kRocTemporaryFilePath, fps = 10 )
+            for (frameIndex, frame) in framesToSaveAsPng:
+                writer.append_data( baseFrame )
+            writer.close()
+            os.rename( kRocTemporaryFilePath, kRocAnalyzedFilePath )
+        else:
+            # Write pngs to disk.
+            for (frameIndex, frame) in framesToSaveAsPng:
+                iio.imwrite( os.path.join( args.destFolder, \
+                    originalVideoFileName + '_ROC_analyzed_frame_' + str( frameIndex ) + '.png' ), frame )
 
 
     logger.PrintMessage( '' )
@@ -388,7 +395,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.onlyDiffs:
         args.highlightDiffs = True
-        
+
     runRateOfChangeAnalysis( args.videoFile, videoAnalysisHelpers.Logger(), args )
 
 #TODO-Pri1 voicua: mark on the frame when there was a fast forward
