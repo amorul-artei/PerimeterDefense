@@ -6,9 +6,10 @@
 # Revision History:
 #      19.01.2022 voicua: Created "processVideos.py" to run analysis on a directory
 
-import os
+import os, sys
 import shutil
 import time
+from time import perf_counter
 import argparse
 
 import ffmpeg
@@ -48,8 +49,6 @@ def CleanupPreviousRun( destFolder ):
     filesToRemove = [ f for f in os.listdir( destFolder ) if os.path.isfile( os.path.join( destFolder, f ) ) and \
         ( f.lower().startswith( videoAnalyzeRateOfChange.kTempFilePrefix.lower() ) or \
           f.lower().startswith( kTempLogFilePrefix.lower() ) ) ]
-    print( destFolder )
-    print( os.listdir( destFolder ) )
     print( "Removing %i temporary files from previous run..." % len( filesToRemove ) )
     for f in filesToRemove:
         os.remove( os.path.join( destFolder, f ) )
@@ -77,14 +76,21 @@ def DoGarminSpecificCleanup():
         os.remove( f )
 
 
-def IsVideoFile( fileName, withNameDecorator ):
-    return os.path.isfile( fileName ) and fileName.lower().endswith( ".mp4" ) and ( withNameDecorator in fileName )
+def IsVideoFile( destFolder, fileName, withNameDecorator ):
+    return os.path.isfile( os.path.join( args.destFolder, fileName ) ) \
+        and fileName.lower().endswith( ".mp4" ) and ( withNameDecorator in fileName )
 
 def runProcessVideos( args ):
 
     #
     # Prepare the folder for a new analysis, by doing some initial maintenance
     #
+
+    if not os.path.exists( args.destFolder ):
+        os.makedirs( args.destFolder )
+        
+    jobLogger = Logger( os.path.join( args.destFolder, "processVideosLog.txt" ) )
+
     CleanupPreviousRun( args.destFolder )
     DoGoProSpecificCleanup()
     DoGarminSpecificCleanup()
@@ -96,8 +102,9 @@ def runProcessVideos( args ):
 
     allSourceVideos = [ f for f in os.listdir() if os.path.isfile( f ) and f.lower().endswith( ".mp4" ) ]
 
-    rocPreviousResults = [ f for f in os.listdir( args.destFolder ) if IsVideoFile( f, "_ROC_analyzed" ) ]
-    allTextFiles = [ f for f in os.listdir( args.destFolder ) if os.path.isfile( f ) and f.lower().endswith( ".txt" ) ]
+    rocPreviousResults = [ f for f in os.listdir( args.destFolder ) if IsVideoFile( args.destFolder, f, "_ROC_analyzed" ) ]
+    allTextFiles = [ f for f in os.listdir( args.destFolder ) \
+        if os.path.isfile( os.path.join( args.destFolder, f ) ) and f.lower().endswith( ".txt" ) ]
 
     # initialize the list with all the originals found in the folder
     tobeAnalyzedVideos = list( set( allSourceVideos ) - set( rocPreviousResults ) )
@@ -119,7 +126,7 @@ def runProcessVideos( args ):
     if len( alreadyAnalyzedOriginals ) > 0:
         print( "Found previous analysis, skipping the following %i originals:" % len( alreadyAnalyzedOriginals ) )
         for f in alreadyAnalyzedOriginals:
-            print( f )
+            jobLogger.PrintMessage( f )
 
 
     tobeAnalyzedVideos = list( set( tobeAnalyzedVideos ) - alreadyAnalyzedOriginals )
@@ -132,18 +139,23 @@ def runProcessVideos( args ):
     tobeAnalyzedVideos.sort( key = lambda x: x[ 1 ] )
 
     print( "" )
-    print( "The following video files will be analyzed:" )
+    jobLogger.PrintMessage( "The following video files will be analyzed:" )
 
+    jobSizeBytes = 0
     for f in tobeAnalyzedVideos:
-        print( GetFormattedFileStats( f ) )
+        jobSizeBytes += f[ 2 ]
+        jobLogger.PrintMessage( GetFormattedFileStats( f ) )
 
-    print( "A total of %i videos to analyze" % len( tobeAnalyzedVideos ) )
+    jobLogger.PrintMessage( "A total of %i videos to analyze" % len( tobeAnalyzedVideos ) )
 
     #AnalyzeTimeline( tobeAnalyzedVideos )
 
     #
     # Run analysis
     #
+
+    jobStartTime = perf_counter()
+    totalSourceProcessed = 0
 
     analyzedFolderName = "AnalyzedVideos"
     if not os.path.exists( analyzedFolderName ):
@@ -159,6 +171,7 @@ def runProcessVideos( args ):
         tempLoggingFilePath = os.path.join( args.destFolder, kTempLogFilePrefix + a[ 0 ] + ".txt" )
         logger = Logger( tempLoggingFilePath )
         logger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ) )
+        jobLogger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ), False )
 
         algPerformanceResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
         errorProcessing = False
@@ -179,9 +192,17 @@ def runProcessVideos( args ):
         print( "" )
         count += 1
 
+        totalSourceProcessed += a[ 2 ]
+        currentTime = perf_counter()
+        jobRunningTimePerf = totalSourceProcessed / (1024.0 * 1024.0 * ( currentTime - jobStartTime ) )
 
-    print( "" )
-    print( "All done." )
+        jobLogger.PrintMessage( "Processing source data at a rate of %.2f MiB/s" % jobRunningTimePerf )
+        if jobSizeBytes - totalSourceProcessed > 0:
+            jobLogger.PrintMessage( "Remaining time to finish: %.2f min" % \
+                float( (( jobSizeBytes - totalSourceProcessed ) / totalSourceProcessed ) * ( currentTime - jobStartTime ) / 60.0) )
+
+    jobLogger.PrintMessage( "" )
+    jobLogger.PrintMessage( "All done." )
 
 
 if __name__ == "__main__":
@@ -192,6 +213,8 @@ if __name__ == "__main__":
         help = "enables display of running time performance split per phases of the algorithm" )
 
     args = parser.parse_args()
+    with open( "cmds.history", "a" ) as fp:
+        fp.write( " ".join( sys.argv ) + '\n' )
 
     runProcessVideos( args )
 
