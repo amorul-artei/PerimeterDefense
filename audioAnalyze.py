@@ -8,6 +8,7 @@
 
 import os
 import argparse
+import subprocess
 
 import ffmpeg
 
@@ -22,9 +23,14 @@ def runAudioAnalysis( videoPathName, logger, args ):
 
     try:
         # For now just extraction, and use a spectrum analysis app such as "Sonic Visualizer" to look at the data
-        ffmpeg.input( videoPathName ).output( audioOutputFilePath, f = "mp3", vcodec = "none" ).run( overwrite_output = True )
+        stdout, stderr = ffmpeg.input( videoPathName ).output( audioOutputFilePath, f = "mp3", vcodec = "none" )\
+            .run( overwrite_output = True, capture_stdout = True, capture_stderr = True )
+        logger.PrintMessage( str( stdout ), False )
+        logger.PrintMessage( str( stderr ), False )
+
     except:
         logger.PrintMessage( "Unable to extract audio." )    
+
     logger.PrintMessage( "Audio analysis done." )
     logger.PrintMessage()
 
