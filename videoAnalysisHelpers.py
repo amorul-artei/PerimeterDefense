@@ -13,10 +13,11 @@ class Logger:
         if not logFileName is None:
             self.fileHandle = open( logFileName, 'a' )
 
-    def PrintMessage( self, msg = None ):
+    def PrintMessage( self, msg = None, printToConsole = True ):
         if msg is None:
             msg = ""
-        print( msg )
+        if printToConsole:
+            print( msg )
         if not self.fileHandle is None:
             self.fileHandle.write( msg + os.linesep )
 
