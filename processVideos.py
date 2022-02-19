@@ -7,6 +7,7 @@
 #      19.01.2022 voicua: Created "processVideos.py" to run analysis on a directory
 
 import os, sys
+import tempfile
 import shutil
 import time
 from time import perf_counter
@@ -24,9 +25,12 @@ def GetFormattedFileSize( size ):
     sizeInGb = float( size ) / (1024.0 * 1024.0 * 1024.0)
     return "{:.2f}GiB".format( sizeInGb )
 
+def GetFormattedFileTime( fileTime ):
+    return time.strftime( '%Y.%m.%d %H:%M:%S', time.localtime( fileTime ) )
+
 def GetFormattedFileStats( f ):
     return f[ 0 ] + ', ' + \
-        time.strftime( '%Y.%m.%d %H:%M:%S', time.localtime( f[ 1 ] ) ) + ', ' + \
+        GetFormattedFileTime( f[ 1 ] ) + ', ' + \
         GetFormattedFileSize( f[ 2 ] )
 
 def WithinRange( v1, v2, r ):
@@ -76,9 +80,39 @@ def DoGarminSpecificCleanup():
         os.remove( f )
 
 
-def IsVideoFile( destFolder, fileName, withNameDecorator ):
-    return os.path.isfile( os.path.join( args.destFolder, fileName ) ) \
-        and fileName.lower().endswith( ".mp4" ) and ( withNameDecorator in fileName )
+def IsVideoFile( fileName ):
+    return os.path.isfile( fileName ) and \
+        (fileName.lower().endswith( ".mp4" ) or fileName.lower().endswith( ".avi" ))
+
+def IsVideoFileWithName( destFolder, fileName, withNameDecorator = None ):
+    return os.path.isfile( os.path.join( args.destFolder, fileName ) ) and \
+        (fileName.lower().endswith( ".mp4" ) or fileName.lower().endswith( ".avi" )) and \
+        ( withNameDecorator is None or withNameDecorator in fileName )
+
+
+# if processing anything in batch, only commit the move operation
+# when the output has been properly saved to disk.
+class DelayedMoveOperation:
+    def __init__( self, targetPath ):
+        self.targetPath = targetPath
+        self.filePaths = []
+
+    def Cancel( self ):
+        self.filePaths.clear()
+
+    def AddFile( self, filePath ):
+        self.filePaths.append( filePath )
+
+    def GetCount( self ):
+        return len( self.filePaths )
+
+    def Commit( self ):
+        if not os.path.exists( self.targetPath ):
+            os.mkdir( self.targetPath )
+        for f in self.filePaths:
+            shutil.move( f, os.path.join( self.targetPath, f ) )
+        self.filePaths.clear()
+
 
 def runProcessVideos( args ):
 
@@ -100,20 +134,24 @@ def runProcessVideos( args ):
     # This in turn enables the user to restart the process on a previously interrupted run.
     #
 
-    allSourceVideos = [ f for f in os.listdir() if os.path.isfile( f ) and f.lower().endswith( ".mp4" ) ]
+    allSourceVideos = [ f for f in os.listdir() if IsVideoFile( f ) ]
 
-    rocPreviousResults = [ f for f in os.listdir( args.destFolder ) if IsVideoFile( args.destFolder, f, "_ROC_analyzed" ) ]
-    allTextFiles = [ f for f in os.listdir( args.destFolder ) \
-        if os.path.isfile( os.path.join( args.destFolder, f ) ) and f.lower().endswith( ".txt" ) ]
-
+    rocPreviousResults = [ f for f in os.listdir( args.destFolder ) if IsVideoFileWithName( args.destFolder, f, "_ROC_analyzed" ) ]
     # initialize the list with all the originals found in the folder
     tobeAnalyzedVideos = list( set( allSourceVideos ) - set( rocPreviousResults ) )
 
     alreadyAnalyzedOriginals = []
+
+    '''
+    # TODO-Pri3: figure out if I still need this feature.
+    # For now, analyzed/aborted videos are moved to a different path, with cancel semantics
+    allTextFiles = [ f for f in os.listdir( args.destFolder ) \
+        if os.path.isfile( os.path.join( args.destFolder, f ) ) and f.lower().endswith( ".txt" ) ]
     for f in allTextFiles:
         origName = os.path.splitext( os.path.basename( f ) )[ 0 ]
         if origName in tobeAnalyzedVideos:
             alreadyAnalyzedOriginals.append( origName )
+    '''
 
     # Remove originals with existing results, even if incomplete analysis, to avoid stealth overwriting of the results
     # Previous results must be explicitly removed by the user
@@ -154,52 +192,126 @@ def runProcessVideos( args ):
     # Run analysis
     #
 
+    diskReadingAccumulator = videoAnalyzeRateOfChange.RunningTimeAccumulator()
     jobStartTime = perf_counter()
     totalSourceProcessed = 0
 
-    analyzedFolderName = "AnalyzedVideos"
-    if not os.path.exists( analyzedFolderName ):
-        os.mkdir( analyzedFolderName )
+    moveToAnalyzed = DelayedMoveOperation( "AnalyzedVideos" )
+    moveToAborted = DelayedMoveOperation( "AbortedVideos" )
+    memoryCopy = None
 
+    # initialize analyzer
     count = 1
+    rateOfChangeAnalyzer = None
+
     for a in tobeAnalyzedVideos:
-        print( "" )
-        print( "" )
-        print( "------------------------------------------------------" )
-        print( "-----------------------%i/%i--------------------------" % (count, len( tobeAnalyzedVideos )) )
+        try:
+            print( "" )
+            print( "" )
+            print( "------------------------------------------------------" )
+            print( "-----------------------%i/%i--------------------------" % (count, len( tobeAnalyzedVideos )) )
 
-        tempLoggingFilePath = os.path.join( args.destFolder, kTempLogFilePrefix + a[ 0 ] + ".txt" )
-        logger = Logger( tempLoggingFilePath )
-        logger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ) )
-        jobLogger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ), False )
+            tempLoggingFilePath = os.path.join( args.destFolder, kTempLogFilePrefix + a[ 0 ] + ".txt" )
+            logger = Logger( tempLoggingFilePath )
+            logger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ) )
+            jobLogger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ), False )
 
-        algPerformanceResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
-        errorProcessing = False
+            algPerformanceResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 
-        # audio analysis
-        audioAnalyze.runAudioAnalysis( a[ 0 ], logger, args )
+            #
+            # Copy file to memory, to avoid reading multiple times from potentially slow media
+            #
 
-        # rate of change analysis
-        videoAnalyzeRateOfChange.runRateOfChangeAnalysis( a[ 0 ], logger, args, algPerformanceResults )
+            jobLogger.PrintMessage( "Copying video file to memory..." )
+            diskReadingAccumulator.OnStartTimer( a[ 2 ] )
+            memoryCopy = tempfile.NamedTemporaryFile( suffix = '.' + os.path.splitext( a[ 0 ] )[1], delete = False )
+            shutil.copy( a[ 0 ], memoryCopy.name )
+            diskReadingAccumulator.OnStopTimer()
+            jobLogger.PrintMessage( "Done copying, at %s." % diskReadingAccumulator.FormatAsMiBPerf( True ) )
+            jobLogger.PrintMessage( memoryCopy.name )
 
-        logger.Close()
-        os.rename( tempLoggingFilePath, os.path.join( args.destFolder, a[ 0 ] + ".txt" ) )
+            #
+            # audio analysis
+            #
 
-        if not ( errorProcessing or algPerformanceResults.analysisAborted ):
-            # move video to "analyzed"
-            shutil.move( a[ 0 ], analyzedFolderName + os.sep + a[ 0 ] )
+            audioAnalyze.runAudioAnalysis( memoryCopy.name, GetFormattedFileTime( a[ 1 ] ), logger, args )
 
-        print( "" )
-        count += 1
+            #
+            # rate of change analysis
+            #
 
-        totalSourceProcessed += a[ 2 ]
-        currentTime = perf_counter()
-        jobRunningTimePerf = totalSourceProcessed / (1024.0 * 1024.0 * ( currentTime - jobStartTime ) )
+            if rateOfChangeAnalyzer is None:
+                sessionName = "Analysis " + GetFormattedFileTime( a[ 1 ] )
+                saveTimerStart = perf_counter()
+                rateOfChangeAnalyzer = videoAnalyzeRateOfChange.RateOfChangeAnalyzer( args, sessionName )
 
-        jobLogger.PrintMessage( "Processing source data at a rate of %.2f MiB/s" % jobRunningTimePerf )
-        if jobSizeBytes - totalSourceProcessed > 0:
-            jobLogger.PrintMessage( "Remaining time to finish: %.2f min" % \
-                float( (( jobSizeBytes - totalSourceProcessed ) / totalSourceProcessed ) * ( currentTime - jobStartTime ) / 60.0) )
+            rateOfChangeAnalyzer.AddVideoFileToAnalysis( memoryCopy.name, logger, algPerformanceResults )
+
+            if algPerformanceResults.analysisAborted:
+                moveToAborted.AddFile( a[ 0 ] )
+            else:
+                moveToAnalyzed.AddFile( a[ 0 ] )
+
+            # All phases done with current file
+            logger.Close()
+            os.rename( tempLoggingFilePath, os.path.join( args.destFolder, a[ 0 ] + ".txt" ) )
+
+            #
+            # Session(time segment) management and cleanup
+            #
+
+            if perf_counter() - saveTimerStart > 10 * 60 or \
+                    algPerformanceResults.analysisAborted or rateOfChangeAnalyzer.GetOutputLength() > 5 * 60:
+                
+                if moveToAnalyzed.GetCount() == 0:
+                    # No need to keep output, all files were aborted
+                    rateOfChangeAnalyzer.RemoveOutput()
+                else:
+                    # Keep output. If last file was aborted, partial analysis may still be in the output. That's ok.
+                    rateOfChangeAnalyzer.FinishAnalysis()
+
+                rateOfChangeAnalyzer = None
+                moveToAnalyzed.Commit()
+                moveToAborted.Commit()
+                jobLogger.PrintMessage( "Finalizing current session at %i" % count )
+
+
+            print( "" )
+            count += 1
+
+            #
+            # Perf counters
+            #
+
+            totalSourceProcessed += a[ 2 ]
+            currentTime = perf_counter()
+            jobRunningTimePerf = totalSourceProcessed / (1024.0 * 1024.0 * ( currentTime - jobStartTime ) )
+            dataReadPerf = totalSourceProcessed / (1024.0 * 1024.0 * diskReadingAccumulator.accumulator )
+
+            jobLogger.PrintMessage( "Reading source data at %.2f MiB/s" % dataReadPerf )
+            jobLogger.PrintMessage( "Processing source data at a rate of %.2f MiB/s" % jobRunningTimePerf )
+            if jobSizeBytes - totalSourceProcessed > 0:
+                jobLogger.PrintMessage( "Remaining time to finish: %.2f min" % \
+                    float( (( jobSizeBytes - totalSourceProcessed ) / totalSourceProcessed ) * ( currentTime - jobStartTime ) / 60.0) )
+
+        except Exception as e:
+            jobLogger.PrintMessage( e )
+            jobLogger.PrintMessage( "Exception thrown during processing, finalizing" )
+            break
+
+        finally:
+            if not memoryCopy is None:
+                memFileName = memoryCopy.name
+                memoryCopy.close()
+                os.remove( memFileName )
+
+
+
+    if not rateOfChangeAnalyzer is None:
+        #TODO-Pri0 voicua: add a transaction class with Commit/Cancel semantics
+        moveToAnalyzed.Commit()
+        moveToAborted.Commit()
+        rateOfChangeAnalyzer.FinishAnalysis()
 
     jobLogger.PrintMessage( "" )
     jobLogger.PrintMessage( "All done." )
