@@ -15,15 +15,14 @@ import ffmpeg
 import videoAnalysisHelpers
 
 
-def runAudioAnalysis( videoPathName, logger, args ):
+def runAudioAnalysis( videoPathLocation, outputName, logger, args ):
     logger.PrintMessage( "Audio analysis starting" )
 
-    originalVideoFileName = os.path.basename( videoPathName )
-    audioOutputFilePath = os.path.join( args.destFolder, originalVideoFileName + ".mp3" )
+    audioOutputFilePath = os.path.join( args.destFolder, outputName + ".mp3" )
 
     try:
         # For now just extraction, and use a spectrum analysis app such as "Sonic Visualizer" to look at the data
-        stdout, stderr = ffmpeg.input( videoPathName ).output( audioOutputFilePath, f = "mp3", vcodec = "none" )\
+        stdout, stderr = ffmpeg.input( videoPathLocation ).output( audioOutputFilePath, f = "mp3", vcodec = "none" )\
             .run( overwrite_output = True, capture_stdout = True, capture_stderr = True )
         logger.PrintMessage( str( stdout ), False )
         logger.PrintMessage( str( stderr ), False )
