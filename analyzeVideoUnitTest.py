@@ -6,6 +6,7 @@
 # Revision History:
 #      16.01.2022 voicua: Created "analyzeVideoUnitTest.py" to test algorithms used in the analyzeVideo script.
 
+import os
 import argparse
 
 import numpy
@@ -77,9 +78,12 @@ class TestStatistics:
 
 def RunTestForVideoFile( fileName, args, stats ):
     PrintTitle( "Running test for file " + fileName )
+
     logger = videoAnalysisHelpers.Logger()
     algPerformanceResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
-    videoAnalyzeRateOfChange.runRateOfChangeAnalysis( fileName, logger, args, algPerformanceResults )
+    rocAnalyzer = videoAnalyzeRateOfChange.RateOfChangeAnalyzer( args, os.path.basename( fileName ) )
+    rocAnalyzer.AddVideoFileToAnalysis( fileName, logger, algPerformanceResults )
+
     CheckResults( fileName, expectedResults, algPerformanceResults, stats )
 
 
