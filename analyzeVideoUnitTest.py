@@ -110,7 +110,7 @@ args = parser.parse_args( "" )
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
 expectedResults.totalFramesInVideoFile = 240
-expectedResults.totalFramesProcessed = 117
+expectedResults.totalFramesProcessed = 119
 expectedResults.totalFramesSkipped = 120
 expectedResults.totalFramesTriggered = 1
 expectedResults.algorithmFPS = 33
@@ -119,8 +119,8 @@ RunTestForVideoFile( unitTest0, args, stats )
 expectedResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 expectedResults.analysisAborted = False
 expectedResults.totalFramesInVideoFile = 480
-expectedResults.totalFramesProcessed = 144
-expectedResults.totalFramesSkipped = 336
+expectedResults.totalFramesProcessed = 151
+expectedResults.totalFramesSkipped = 328
 expectedResults.totalFramesTriggered = 1
 expectedResults.algorithmFPS = 47
 RunTestForVideoFile( unitTest1, args, stats )

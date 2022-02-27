@@ -9,29 +9,17 @@
 import os, sys
 import tempfile
 import shutil
-import time
 from time import perf_counter
-import argparse
+import argparse, shlex
 
 import ffmpeg
 
 import audioAnalyze
 import videoAnalyzeRateOfChange
-from videoAnalysisHelpers import Logger
+import videoAnalysisHelpers as vh
 
 kTempLogFilePrefix = "temp_logfile_"
 
-def GetFormattedFileSize( size ):
-    sizeInGb = float( size ) / (1024.0 * 1024.0 * 1024.0)
-    return "{:.2f}GiB".format( sizeInGb )
-
-def GetFormattedFileTime( fileTime ):
-    return time.strftime( '%Y.%m.%d %H:%M:%S', time.localtime( fileTime ) )
-
-def GetFormattedFileStats( f ):
-    return f[ 0 ] + ', ' + \
-        GetFormattedFileTime( f[ 1 ] ) + ', ' + \
-        GetFormattedFileSize( f[ 2 ] )
 
 def WithinRange( v1, v2, r ):
     return abs( v2 - v1 ) <= r
@@ -123,7 +111,7 @@ def runProcessVideos( args ):
     if not os.path.exists( args.destFolder ):
         os.makedirs( args.destFolder )
         
-    jobLogger = Logger( os.path.join( args.destFolder, "processVideosLog.txt" ) )
+    jobLogger = vh.Logger( os.path.join( args.destFolder, "processVideosLog.txt" ) )
 
     CleanupPreviousRun( args.destFolder )
     DoGoProSpecificCleanup()
@@ -179,12 +167,19 @@ def runProcessVideos( args ):
     print( "" )
     jobLogger.PrintMessage( "The following video files will be analyzed:" )
 
+    i = 0
     jobSizeBytes = 0
     for f in tobeAnalyzedVideos:
-        jobSizeBytes += f[ 2 ]
-        jobLogger.PrintMessage( GetFormattedFileStats( f ) )
+        printToConsole = len( tobeAnalyzedVideos ) <= 10 or ( i in (0, 1, len( tobeAnalyzedVideos ) - 1 ) )
+        jobLogger.PrintMessage( vh.GetFormattedFileStats( f ), printToConsole )
+        if not printToConsole and i == 2:
+            print( "..." )
 
-    jobLogger.PrintMessage( "A total of %i videos to analyze" % len( tobeAnalyzedVideos ) )
+        jobSizeBytes += f[ 2 ]
+        i += 1
+
+    jobLogger.PrintMessage( "A total of %i videos to analyze, %s" % \
+        (len( tobeAnalyzedVideos ), vh.FormatMemSize( jobSizeBytes )) )
 
     #AnalyzeTimeline( tobeAnalyzedVideos )
 
@@ -212,9 +207,9 @@ def runProcessVideos( args ):
             print( "-----------------------%i/%i--------------------------" % (count, len( tobeAnalyzedVideos )) )
 
             tempLoggingFilePath = os.path.join( args.destFolder, kTempLogFilePrefix + a[ 0 ] + ".txt" )
-            logger = Logger( tempLoggingFilePath )
-            logger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ) )
-            jobLogger.PrintMessage( "Running analysis for " + GetFormattedFileStats( a ), False )
+            logger = vh.Logger( tempLoggingFilePath )
+            logger.PrintMessage( "Running analysis for " + vh.GetFormattedFileStats( a ) )
+            jobLogger.PrintMessage( "Running analysis for " + vh.GetFormattedFileStats( a ), False )
 
             algPerformanceResults = videoAnalyzeRateOfChange.AlgorithmPerformanceResults()
 
@@ -234,14 +229,14 @@ def runProcessVideos( args ):
             # audio analysis
             #
 
-            audioAnalyze.runAudioAnalysis( memoryCopy.name, GetFormattedFileTime( a[ 1 ] ), logger, args )
+            audioAnalyze.runAudioAnalysis( memoryCopy.name, vh.GetFormattedFileTime( a[ 1 ] ), logger, args )
 
             #
             # rate of change analysis
             #
 
             if rateOfChangeAnalyzer is None:
-                sessionName = "Analysis " + GetFormattedFileTime( a[ 1 ] )
+                sessionName = "Analysis " + vh.GetFormattedFileTime( a[ 1 ] )
                 saveTimerStart = perf_counter()
                 rateOfChangeAnalyzer = videoAnalyzeRateOfChange.RateOfChangeAnalyzer( args, sessionName )
 
@@ -295,7 +290,7 @@ def runProcessVideos( args ):
                     float( (( jobSizeBytes - totalSourceProcessed ) / totalSourceProcessed ) * ( currentTime - jobStartTime ) / 60.0) )
 
         except Exception as e:
-            jobLogger.PrintMessage( e )
+            jobLogger.PrintMessage( str( e ) )
             jobLogger.PrintMessage( "Exception thrown during processing, finalizing" )
             break
 
@@ -318,15 +313,32 @@ def runProcessVideos( args ):
 
 
 if __name__ == "__main__":
+    CMDS_FILE_NAME = "cmds.history"
     parser = argparse.ArgumentParser()
     parser.add_argument( "--destFolder", type = str, default = ".",
         help = "optional destination folder for results of analysis. Default: current working directory" )
     parser.add_argument( "--verboseRunningTime", action = "store_true",
         help = "enables display of running time performance split per phases of the algorithm" )
+    parser.add_argument( "--cont", action="store_true",
+        help="ignores all other parameters and continues previous run from %s file" % CMDS_FILE_NAME )
 
     args = parser.parse_args()
-    with open( "cmds.history", "a" ) as fp:
-        fp.write( " ".join( sys.argv ) + '\n' )
+
+    # continue previous run?
+    if args.cont:
+        if not ( os.path.exists( CMDS_FILE_NAME ) and os.path.isfile( CMDS_FILE_NAME ) ):
+            print( "File not found: %s" % CMDS_FILE_NAME )
+            sys.exit( 1 )
+        with open( CMDS_FILE_NAME ) as fp:
+            lines = fp.readlines()
+            if len( lines ) < 1:
+                print( "Empty commands file: %s" % CMDS_FILE_NAME )
+                sys.exit( 1 )
+            args = parser.parse_args( shlex.split( lines[ -1 ] )[ 1:: ] )
+    else:
+        # proceed with given arguments
+        with open( CMDS_FILE_NAME, "a" ) as fp:
+            fp.write( shlex.join( sys.argv ) + '\n' )
 
     runProcessVideos( args )
 
@@ -340,6 +352,8 @@ if __name__ == "__main__":
 #TODO-Pri0 voicua: overall performance metrics, measured in raw source bytes per second processed.
 #TODO-Pri0 voicua: copy  source file to memory and do all read operations from there, to read only once (4GB files, etc)
 #TODO-Pri2 voicua: overflow folder for disk full
+#TODO-Pri0 voicua: I just realized that LRV videos (GoPro has them) might be good enough for the initial ROC analysis, and use the highres 
+#   only for subsequent analysis phases. For this I probably should introduce the concept of "original assets" and 
+#   "derived assets" to be able to manage multiple files for the same original timeline
 
 
-#TODO-Pri0 voicua: python script to quickly format SD cards, by choosing entry number (list df -h, skip system or protected)
