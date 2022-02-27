@@ -10,17 +10,26 @@
 #      17.02.2022 voicua: Major refactoring to allow for "defragmentation" of video sources by preserving analysis state between calls
 
 
-import imageio as iio
-import ffmpeg
-from PIL import Image
-import numpy
-
 import os
 import sys
 from time import perf_counter
 import argparse
 
-import videoAnalysisHelpers
+import imageio as iio
+import ffmpeg
+from PIL import Image
+import numpy
+
+import psutil
+#import profile
+#import gc
+
+#from decord import VideoReader
+#from decord import cpu, gpu
+from vidgear.gears import CamGear
+
+
+import videoAnalysisHelpers as vh
 
 kLuminanceDiffThreshold = 32
 kMotionDerivativeThreshold = 20.0 # percentage of change in modified pixel count
@@ -157,6 +166,67 @@ class AlgorithmPerformanceResults:
         self.rocAnalysisAccumulator = RunningTimeAccumulator()
 
 
+class ImageIOVideoIterator:
+    def __init__( self, videoPathName ):
+        self.videoReader = iio.get_reader( videoPathName )
+        self.currentIndex = 0
+
+    def ReadNextFrame( self ):
+        nextFrame = self.videoReader.get_next_data()
+        self.currentIndex += 1
+        return nextFrame
+
+    def SkipFrames( self, count ):
+        self.videoReader.set_image_index( self.currentIndex + count )
+            #no way to know how many were actually remaining in the stream
+            #total frames calculations are approximate and for some streams unknown
+        self.currentIndex += count
+
+    def CurrentIndex( self ):
+        return self.currentIndex
+
+'''
+class DecordVideoIterator:
+    def __init__( self, videoPathName ):
+        self.videoReader = VideoReader( videoPathName, ctx = cpu(0) )
+        self.currentIndex = 0
+
+    def ReadNextFrame( self ):
+        gc.collect()
+        nextFrame = self.videoReader.next().asnumpy()
+        self.currentIndex += 1
+        return nextFrame
+        
+    def SkipFrames( self, count ):
+        self.videoReader.skip_frames( count )
+        self.currentIndex += count
+
+    def CurrentIndex( self ):
+        return self.currentIndex
+'''
+'''
+class VidGearVideoIterator:
+    def __init__( self, videoPathName ):
+        self.stream = CamGear( source = videoPathName ).start()
+        self.currentIndex = 0
+
+    def ReadNextFrame( self ):
+        nextFrame = self.stream.read()
+        self.currentIndex += 1
+        return nextFrame
+
+    def SkipFrames( self, count ):
+        self.videoReader.set_image_index( self.currentIndex + count )
+        self.currentIndex += count
+
+    def CurrentIndex( self ):
+        return self.currentIndex
+'''
+
+def CreateVideoIterator( videoPathName ):
+    return ImageIOVideoIterator( videoPathName )
+
+
 class RateOfChangeAnalyzer:
     def __init__( self, args, videoAnalysisName ):
         self.args = args
@@ -191,6 +261,8 @@ class RateOfChangeAnalyzer:
             print( 'File not found: ' + videoPathName )
             return
 
+        #tracemalloc.start()
+
         # Get video properties such as number of frames, duration, etc
         videoMeta = ffmpeg.probe( videoPathName )[ "streams" ]
 
@@ -207,11 +279,10 @@ class RateOfChangeAnalyzer:
         logger.PrintMessage( 'Total frames: %i' % totalFrames )
         algPerformanceResults.totalFramesInVideoFile = totalFrames
 
-        # Initialize reader
-        reader = iio.get_reader( videoPathName )
-        currentFrameIndex = 0
+        # Initialize video iterator
+        videoIter = CreateVideoIterator( videoPathName )
         if self.baseFrame is None:
-            self.baseFrame = reader.get_next_data()
+            self.baseFrame = videoIter.ReadNextFrame()
             self.baseOfComparison = PrepareFrameForAnalysis( self.baseFrame )
             self.baseDiffCoefficient = -1
 
@@ -231,35 +302,26 @@ class RateOfChangeAnalyzer:
 
         while not (self.baseOfComparison is None):
 
+            #
             # Read the next frame. Skip some frames if we are in skipping mode (i.e. uninteresting portion of the video)
-            if currentFrameIndex + self.frameSkip >= totalFrames:
-                break   # end of the video. TODO voicua: consider to always process the last few frames (i.e. disable frameSkip if on)
+            #
 
             algPerformanceResults.frameFetchingAccumulator.OnStartTimer()
 
             currentFrame = None
 
             try:
-                if self.frameSkip > 0 and currentFrameIndex > 0:
-                    reader.set_image_index( currentFrameIndex + self.frameSkip )
-                    currentFrameIndex += self.frameSkip
+                if self.frameSkip > 0 and videoIter.CurrentIndex() > 1 and \
+                    videoIter.CurrentIndex() + self.frameSkip < totalFrames:
+
+                    videoIter.SkipFrames( self.frameSkip )
                     algPerformanceResults.totalFramesSkipped += self.frameSkip
 
-                currentFrame = reader.get_next_data()
-                currentFrameIndex += 1
+                currentFrame = videoIter.ReadNextFrame()
 
-                '''
-                # The following strategy for skipping frames is slower, to avoid
-                numFramesRead = 0
-                while numFramesRead <= frameSkip:
-                    currentFrame = next( iter, None )
-                    if currentFrame is None:
-                        break
-                    currentFrameIndex += 1
-                    numFramesRead += 1
-                '''
-            except:
-                logger.PrintMessage( "Exception thrown by video decoder attempting to read frame index %i" % currentFrameIndex )
+            except Exception as e:
+                logger.PrintMessage( str( e ) )
+                logger.PrintMessage( "Exception thrown by video decoder attempting to read frame index %i" % videoIter.CurrentIndex() )
                 # TODO-Pri1 voicua: what if the file support media was unplugged?
                 logger.PrintMessage( "Assuming end of file. Ending analysis." )
 
@@ -300,7 +362,7 @@ class RateOfChangeAnalyzer:
                 self.baseOfComparison = currentComparison
 
                 # Save the pixels for subsequent analysis
-                self.BufferDetectedFrame( currentDetectedFrames, currentFrameIndex, self.baseFrame )
+                self.BufferDetectedFrame( currentDetectedFrames, videoIter.CurrentIndex(), self.baseFrame )
         
                 # Update compression (detection) statistics
                 numLoopsUntriggered = 0
@@ -322,8 +384,8 @@ class RateOfChangeAnalyzer:
             # Inspect movie time compression performance, and skip this file if it cannot be analyzed by this algorithm
             #
 
-            timeCompressionRatio = float( totalNumFramesTriggered ) / float( currentFrameIndex )
-            if currentFrameIndex > kWarmUpFrameCount:
+            timeCompressionRatio = float( totalNumFramesTriggered ) / float( videoIter.CurrentIndex() )
+            if videoIter.CurrentIndex() > kWarmUpFrameCount:
                 if timeCompressionRatio > 0.95 or (timeCompressionRatio > 0.50 and timeCompressionRatio > prevTimeCompressionRatio): 
                     analysisAborted = True
                     break
@@ -334,12 +396,12 @@ class RateOfChangeAnalyzer:
             # Update algorithm running time performance statistics
             #
 
-            currentPercentageDone = float( currentFrameIndex ) / float( totalFrames)
+            currentPercentageDone = float( videoIter.CurrentIndex() ) / float( totalFrames)
             currentTime = perf_counter()
             if currentTime - timerStart > 10 or framesProcessedPerSecond == 0:
                 # recalculate statistics
                 timeSpanReference = currentTime - timerStart
-                framesProcessedPerSecond = int( (currentFrameIndex - frameIndexStarted) / timeSpanReference )
+                framesProcessedPerSecond = int( (videoIter.CurrentIndex() - frameIndexStarted) / timeSpanReference )
                 if not self.args is None and self.args.verboseRunningTime:
                     diskPercentage = int( 100.0 * algPerformanceResults.frameFetchingAccumulator.accumulator / timeSpanReference )
                     prepPercentage = int( 100.0 * algPerformanceResults.framePrepAccumulator.accumulator / timeSpanReference )
@@ -347,17 +409,19 @@ class RateOfChangeAnalyzer:
                     logger.PrintMessage()
                     logger.PrintMessage( "Algorithm FPS: %i (Frame fetching: %i%%, Frame preparation: %i%%, Analysis: %i%%)" \
                         % (framesProcessedPerSecond, diskPercentage, prepPercentage, analysisPercentage) )
+                    print( "Total allocated memory: %s" % vh.FormatMemSize( psutil.Process().memory_info().rss ) )
+                    
                 # reset counters
                 timerStart = currentTime
-                frameIndexStarted = currentFrameIndex
+                frameIndexStarted = videoIter.CurrentIndex()
                 algPerformanceResults.ResetPerfCounters()
 
             if self.frameSkip == 0:        
                 print( "Frames completed: %i (%i%%, speed=%ifps), ratio = %.2f            " \
-                    % (currentFrameIndex, 100 * currentPercentageDone, framesProcessedPerSecond, timeCompressionRatio), end='\r' )
+                    % (videoIter.CurrentIndex(), 100 * currentPercentageDone, framesProcessedPerSecond, timeCompressionRatio), end='\r' )
             else:
                 print( "Frames completed: %i (%i%%, speed=%ifps), frameSkip = %i          " \
-                    % (currentFrameIndex, 100 * currentPercentageDone, framesProcessedPerSecond, self.frameSkip), end='\r' )
+                    % (videoIter.CurrentIndex(), 100 * currentPercentageDone, framesProcessedPerSecond, self.frameSkip), end='\r' )
 
         # Update returned performance data
         algPerformanceResults.totalFramesTriggered = totalNumFramesTriggered
@@ -375,6 +439,7 @@ class RateOfChangeAnalyzer:
         logger.PrintMessage( 'Number of frames processed: %i' % algPerformanceResults.totalFramesProcessed )
         logger.PrintMessage( 'Total number of frames found interesting: %i' % totalNumFramesTriggered )
         logger.PrintMessage( "Frame rate-of-change analysis done." )
+
 
 
     # returns the duration in seconds, of the output video
@@ -456,7 +521,7 @@ if __name__ == "__main__":
         args.highlightDiffs = True
 
     rocAnalyzer = RateOfChangeAnalyzer( args, os.path.basename( args.videoFile ) )
-    rocAnalyzer.AddVideoFileToAnalysis( args.videoFile, videoAnalysisHelpers.Logger() )
+    rocAnalyzer.AddVideoFileToAnalysis( args.videoFile, vh.Logger() )
     rocAnalyzer.FinishAnalysis()
 
 #TODO-Pri1 voicua: mark on the frame when there was a fast forward
