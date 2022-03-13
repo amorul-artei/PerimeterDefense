@@ -240,7 +240,12 @@ def runProcessVideos( args ):
                 saveTimerStart = perf_counter()
                 rateOfChangeAnalyzer = videoAnalyzeRateOfChange.RateOfChangeAnalyzer( args, sessionName )
 
-            rateOfChangeAnalyzer.AddVideoFileToAnalysis( memoryCopy.name, logger, algPerformanceResults )
+            try:
+                rateOfChangeAnalyzer.AddVideoFileToAnalysis( memoryCopy.name, logger, algPerformanceResults )
+            except Exception as e:
+                jobLogger.PrintMessage( str( e ) )
+                jobLogger.PrintMessage( "Exception thrown during ROC processing, aborting this file" )
+                algPerformanceResults.analysisAborted = True
 
             if algPerformanceResults.analysisAborted:
                 moveToAborted.AddFile( a[ 0 ] )
@@ -355,5 +360,5 @@ if __name__ == "__main__":
 #TODO-Pri0 voicua: I just realized that LRV videos (GoPro has them) might be good enough for the initial ROC analysis, and use the highres 
 #   only for subsequent analysis phases. For this I probably should introduce the concept of "original assets" and 
 #   "derived assets" to be able to manage multiple files for the same original timeline
-
+#TODO-Pri0 voicua: re-encoding option for when I want to preserve the full videos, but with much better size compression
 

@@ -79,11 +79,15 @@ if __name__ == "__main__":
             target = p
             break
 
+    if target is None:
+        print( "Specified partition not found" )
+        sys.exit( 1 )
+
     if len( sys.argv ) > 2:
         label = sys.argv[ 2 ]
     else:
         label = p.mountpoint.split( '/' )[ -1 ]
-    answer = ReadUserInput( "Proceed with formatting (LABEL = %s)? (y/n): " % label, "yn" )
+    answer = ReadUserInput( "Proceed with formatting (LABEL = '%s')? (y/n): " % label, "yn" )
     if answer == 'n':
         sys.exit( 0 )
 
@@ -92,4 +96,4 @@ if __name__ == "__main__":
         print( "Error dismounting device" )
         sys.exit( process.returncode )
 
-    process = subprocess.run( [ "mkfs.vfat", "-n %s" % label, p.device ] )
+    process = subprocess.run( [ "mkfs.vfat", "-n", label, p.device ] )

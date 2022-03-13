@@ -26,7 +26,7 @@ import psutil
 
 #from decord import VideoReader
 #from decord import cpu, gpu
-from vidgear.gears import CamGear
+#from vidgear.gears import CamGear
 
 
 import videoAnalysisHelpers as vh
@@ -261,8 +261,6 @@ class RateOfChangeAnalyzer:
             print( 'File not found: ' + videoPathName )
             return
 
-        #tracemalloc.start()
-
         # Get video properties such as number of frames, duration, etc
         videoMeta = ffmpeg.probe( videoPathName )[ "streams" ]
 
@@ -278,6 +276,10 @@ class RateOfChangeAnalyzer:
         totalFrames = int( frameRate * float( videoMeta[ 0 ][ 'duration' ] ) )
         logger.PrintMessage( 'Total frames: %i' % totalFrames )
         algPerformanceResults.totalFramesInVideoFile = totalFrames
+        if algPerformanceResults.totalFramesInVideoFile == 0:
+            logger.PrintMessage( "Cannot parse file, or it's empty. Aborting file." )
+            algPerformanceResults.analysisAborted = True
+            return
 
         # Initialize video iterator
         videoIter = CreateVideoIterator( videoPathName )
